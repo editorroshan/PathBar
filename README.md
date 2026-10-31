@@ -17,8 +17,8 @@ save a download.
 
 - **Works in every app's Save and Open dialogs**: Chrome, Brave, Safari, Firefox downloads,
   "Save As…", "Open…", upload pickers.
-- **Works in Finder windows**: the bar sits in the toolbar where the title is, and stretches
-  out while you type.
+- **Works in Finder windows**: click the folder name in the toolbar and the full path
+  appears, ready to type. It disappears again when you're done.
 - **Type or paste a path** and press Return to jump. `~`, quoted paths, `file://` URLs and
   paths copied from Terminal (`My\ Folder`) all work. **Tab** completes folder names.
 - **↑** goes up one folder. **Copy** copies the full path.
@@ -70,11 +70,12 @@ That's it. Open any Save dialog to try it.
 | Where | What happens |
 | --- | --- |
 | Save / Open dialog | The bar floats just above the dialog, showing the full path. |
-| Finder window | The bar sits in the toolbar. Click it and it widens up to the search field. |
+| Finder window | Hidden until you click the folder name in the toolbar. Then the path appears in its place, reaching up to the search field. Return, Esc, a click elsewhere or switching apps hides it. |
 
 - **Click the path.** It's all selected, so just type or paste a new one.
 - **Return** jumps there. **Esc** cancels. **Tab** completes a folder name.
-- **↑** goes up a folder. In Finder this is Finder's own ⌘↑, so Back still works.
+- **↑** goes up a folder. In Finder this is Finder's own ⌘↑, so Back still works, and the
+  bar stays open so you can keep going up.
 - **⧉** copies the path. **⟲** lists recent folders and your open Finder windows.
   The first time, macOS asks to let PathBar read your Finder windows.
 
@@ -135,15 +136,19 @@ with it, so macOS sees the same app and keeps the permission.
 
 ## How it works
 
-PathBar is a small menu-bar app in Swift/AppKit with no dependencies. It polls the front
-app through the Accessibility API and looks for windows whose identifier is `save-panel` or
-`open-panel`, or for Finder's front browser window. It reads the folder from the file list
+PathBar is a small menu-bar app in Swift/AppKit with no dependencies. It listens to the
+front app's Accessibility notifications (new window, focus change) and looks for windows
+whose identifier is `save-panel` or `open-panel`, or for Finder's front browser window.
+While the bar is on screen it follows the window using the window server's own position:
+every screen refresh while you drag, 10 times a second when still. This uses no CPU
+when no dialog is open, and the bar disappears the moment the window closes. It reads the folder from the file list
 (each row carries its file URL) and the folder pop-up or window title. To jump, it opens the
 window's own **Go to Folder** sheet and enters the path, the same thing you'd do by hand.
 
 ```
 Sources/
-  main.swift       app, watch loop, menu bar icon, settings
+  main.swift       app, watching and following windows, menu bar icon, settings
+  Tracking.swift   window-server positions, Accessibility notifications, adaptive frame clock
   AX.swift         Accessibility helpers; finding dialogs and Finder windows; reading the folder
   Navigator.swift  jumping (Go to Folder), path parsing, Tab completion
   Bar.swift        the floating bar UI

@@ -119,7 +119,14 @@ final class FilePanel {
     /// Finder only: where the bar sits in the toolbar, relative to the window's top-left. nil = dock above.
     var slot: CGRect?
     var wideSlot: CGRect?         // while typing: stretches to the search field
+    var titleRect: CGRect?        // Finder: the window title; clicking it shows the bar
     var slotWidth: CGFloat = 0    // window width the slot was measured for
+    /// Finder: the bar is hidden until you click the window title.
+    var revealed = false
+    /// Window-server id of the window (nil if it couldn't be matched; then Accessibility is used).
+    var windowID: CGWindowID?
+    var frame: CGRect?            // last known frame, Accessibility (top-left) coordinates
+    var popupWatched = false
 
     var isFinder: Bool { kind == "finder" }
 
@@ -181,7 +188,7 @@ enum PanelFinder {
     /// The free stretch of a Finder toolbar between the ←/→ buttons and the next control
     /// (where the window title is), and a wider one reaching to the search field for typing.
     /// Relative to the window's top-left; nil if too narrow.
-    static func toolbarSlot(window: AXUIElement, frame wf: CGRect) -> (normal: CGRect, wide: CGRect)? {
+    static func toolbarSlot(window: AXUIElement, frame wf: CGRect) -> (normal: CGRect, wide: CGRect, title: CGRect)? {
         guard let tb = toolbar(of: window), let tf = AX.frame(tb) else { return nil }
         var items: [(role: String, text: String, frame: CGRect)] = []
         func add(_ e: AXUIElement, depth: Int) {
@@ -209,7 +216,13 @@ enum PanelFinder {
         let wideRight = min(search ?? tf.maxX - 12, wf.maxX - 12)
         var wide = slot
         wide.size.width = max(slot.width, wideRight - 10 - slot.minX)
-        return (slot.offsetBy(dx: -wf.minX, dy: -wf.minY), wide.offsetBy(dx: -wf.minX, dy: -wf.minY))
+        // The title text Finder draws in that gap (what you click to show the bar).
+        let title = AX.children(window, limit: 40).lazy
+            .filter { AX.string($0, kAXRoleAttribute) == "AXStaticText" }
+            .compactMap { AX.frame($0) }
+            .first { $0.midY >= tf.minY && $0.midY <= tf.maxY && $0.width > 20 } ?? slot
+        let rel = { (r: CGRect) in r.offsetBy(dx: -wf.minX, dy: -wf.minY) }
+        return (rel(slot), rel(wide), rel(title))
     }
 
     static func sheets(of w: AXUIElement) -> [AXUIElement] {

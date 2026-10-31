@@ -62,6 +62,7 @@ final class Bar: NSObject, NSTextFieldDelegate {
     private let background = DropView()
     weak var delegate: BarDelegate?
     private var shownPath: String?
+    private var shownText = ""
     private(set) var visible = false
     private var lastFrame = NSRect.zero
     private var stack: NSStackView!
@@ -229,6 +230,13 @@ final class Bar: NSObject, NSTextFieldDelegate {
         panel.orderOut(nil)
     }
 
+    /// Takes the keyboard and selects the whole path, ready to type over (Finder: after clicking the title).
+    func focusField() {
+        panel.makeKey()
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
     /// Hands the keyboard back to the dialog (we only keep it while you type a path).
     func releaseKeyFocus() {
         guard panel.isKeyWindow else { return }
@@ -240,9 +248,18 @@ final class Bar: NSObject, NSTextFieldDelegate {
     // MARK: Content
 
     func setPath(_ path: String?, name: String?, force: Bool = false) {
-        if isEditing && !force { return }
+        if isEditing && !force {
+            // Still showing what we put there (you haven't typed): keep it current and selected.
+            guard field.stringValue == shownText, path != shownPath else { return }
+            shownPath = path
+            shownText = path ?? name ?? ""
+            field.stringValue = shownText
+            field.currentEditor()?.selectAll(nil)
+            return
+        }
         shownPath = path
-        field.stringValue = path ?? name ?? ""
+        shownText = path ?? name ?? ""
+        field.stringValue = shownText
         field.textColor = path == nil ? .secondaryLabelColor : .labelColor
         up.isEnabled = path != nil && path != "/"
         up.alphaValue = up.isEnabled ? 1 : 0.45
