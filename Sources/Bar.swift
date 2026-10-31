@@ -14,6 +14,27 @@ protocol BarDelegate: AnyObject {
 final class BarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// PathBar has no menu bar, so the usual Edit-menu shortcuts are handled here.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
+        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        var action: Selector?
+        if flags == .command {
+            switch key {
+            case "x": action = #selector(NSText.cut(_:))
+            case "c": action = #selector(NSText.copy(_:))
+            case "v": action = #selector(NSText.paste(_:))
+            case "a": action = #selector(NSText.selectAll(_:))
+            case "z": action = Selector(("undo:"))
+            default: break
+            }
+        } else if flags == [.command, .shift], key == "z" {
+            action = Selector(("redo:"))
+        }
+        if let action, NSApp.sendAction(action, to: nil, from: self) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 /// Buttons react to the first click even though PathBar is never the active app.

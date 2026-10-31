@@ -683,6 +683,11 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         else if cmd.hasPrefix("pid:") { forcedPid = pid_t(cmd.dropFirst(4)); dropPanel() }
         else if cmd == "focus" { if panel?.isFinder == true { reveal() } else { bar.focusField() } }
         else if cmd == "blur" { barCancelEditing() }
+        else if cmd.hasPrefix("cmdkey:"), let code = CGKeyCode(cmd.dropFirst(7)) {
+            // A real ⌘-keypress to test shortcuts in the bar; only when the bar has the keyboard,
+            // so it can never land in another app.
+            if bar.panel.isKeyWindow { Keys.post(code, flags: .maskCommand, to: nil) } else { log("cmdkey ignored: bar not focused") }
+        }
         else if cmd == "close", let p = panel {
             // Presses the window's close button (Finder) or Cancel (dialogs), to time how fast the bar goes.
             // Pressed off the main thread: the call waits for the app, and the bar must keep updating meanwhile.
@@ -709,7 +714,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         }
         else if cmd == "state" {
             let f = bar.panel.frame
-            log("state: trusted=\(trusted) enabled=\(enabled) dialog=\(panel.map { "\($0.kind) pid \($0.pid)" } ?? "none") path=\(panel?.path ?? "-") popup=\(panel?.popupValue ?? "-") bar=\(bar.visible ? "visible" : "hidden") at \(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))")
+            log("state: trusted=\(trusted) enabled=\(enabled) dialog=\(panel.map { "\($0.kind) pid \($0.pid)" } ?? "none") path=\(panel?.path ?? "-") popup=\(panel?.popupValue ?? "-") bar=\(bar.visible ? "visible" : "hidden") text=[\(bar.field.stringValue)] at \(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))")
         }
     }
 }
