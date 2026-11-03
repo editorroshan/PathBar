@@ -75,6 +75,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         bar.delegate = self
         setupStatusItem()
         trusted = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+        updateStatusIcon()      // the icon was drawn before the permission was known
         log("started (pid \(getpid())), accessibility \(trusted ? "granted" : "NOT granted yet")")
 
         // Safety net; most changes arrive as notifications (below).
