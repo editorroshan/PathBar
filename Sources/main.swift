@@ -40,9 +40,15 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
     private var trusted = false
     /// Test hook: treat this process as the front app (set with the "pid:<n>" command).
     private var forcedPid: pid_t?
-    /// New windows / focus changes in the front app, so dialogs are picked up at once.
-    private var appWatcher: AXWatcher?
-    private var appWatcherPid: pid_t = 0
+    /// Last look at the front app's windows (window server); the app is only asked when this changes.
+    private var lastSnapshot: WindowServer.Snapshot?
+    private var findRetries = 0
+    private var lastFind = Date.distantPast
+    private var lastTrustCheck = Date.distantPast
+    /// Looks at the window list 4×/s for a moment after a click or app switch (when dialogs appear),
+    /// and once a second otherwise.
+    private var busyUntil = Date.distantPast
+    private var lastLook = Date.distantPast
     /// The tracked window: closed, renamed (Finder), folder pop-up changed (dialogs).
     private var panelWatcher: AXWatcher?
     /// Runs once per screen refresh, only while the bar is on screen.
@@ -78,14 +84,13 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         updateStatusIcon()      // the icon was drawn before the permission was known
         log("started (pid \(getpid())), accessibility \(trusted ? "granted" : "NOT granted yet")")
 
-        // Safety net; most changes arrive as notifications (below).
-        let slow = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.check() }
+        // Watches window changes through the window server (free for other apps).
+        let slow = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.check() }
         RunLoop.main.add(slow, forMode: .common)
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(appActivated(_:)), name: NSWorkspace.didActivateApplicationNotification, object: nil)
         // Clicks in other apps: Finder title clicks show the bar, clicks elsewhere hide it.
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] e in self?.globalMouse(e) }
-        watchFrontApp()
 
         // Test hooks, off unless turned on with: defaults write local.pathbar.helper debug -bool true
         // (any program can send these, so they stay off in normal use).
@@ -100,7 +105,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
     // MARK: Watching for dialogs and Finder windows
 
     @objc private func appActivated(_ note: Notification) {
-        // Hide right away when you switch apps; don't wait for the next check.
+        // Hide right away when you switch apps; don't wait for the next look.
         if let p = panel {
             if frontPid() != p.pid {
                 if p.isFinder { conceal() } else { bar.hide(); clock.stop() }
@@ -108,57 +113,68 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
                 clock.start()
             }
         }
-        watchFrontApp()
+        lastSnapshot = nil      // a different app: look at its windows afresh
         scheduleCheck()
     }
 
-    private func watchFrontApp() {
-        guard trusted, let pid = frontPid(), pid != getpid() else { return }
-        if pid == appWatcherPid, appWatcher != nil { return }
-        appWatcherPid = pid
-        appWatcher = AXWatcher(pid: pid)
-        appWatcher?.handler = { [weak self] _, _ in self?.scheduleCheck() }
-        appWatcher?.watch(AXUIElementCreateApplication(pid),
-                          [kAXFocusedWindowChangedNotification, kAXWindowCreatedNotification, "AXSheetCreated"])
-    }
-
-    /// Runs `check()` once soon, however many notifications arrive together.
+    /// Runs `check()` once soon, however many triggers arrive together.
     private func scheduleCheck() {
+        busyUntil = Date().addingTimeInterval(1.5)
         guard !checkPending else { return }
         checkPending = true
         DispatchQueue.main.async { self.checkPending = false; self.check() }
     }
 
+    /// Four times a second: a look at the front app's windows through the window server, which
+    /// costs the app nothing. Only when a new window appears (or another one comes to the front)
+    /// is the app asked, once, whether it's a Save/Open dialog. Apps are never polled.
     private func check() {
-        let nowTrusted = AXIsProcessTrusted()
-        if nowTrusted != trusted {
-            trusted = nowTrusted
-            log("accessibility \(trusted ? "granted" : "revoked")")
-            updateStatusIcon()
-            if trusted { watchFrontApp() }
+        if Date().timeIntervalSince(lastTrustCheck) > 3 {
+            lastTrustCheck = Date()
+            let nowTrusted = AXIsProcessTrusted()
+            if nowTrusted != trusted {
+                trusted = nowTrusted
+                log("accessibility \(trusted ? "granted" : "revoked")")
+                updateStatusIcon()
+            }
         }
         guard enabled, trusted, let pid = frontPid() else { dropPanel(); return }
         if pid == getpid() { return }
+        let now = Date()
+        if now >= busyUntil && findRetries == 0 && now.timeIntervalSince(lastLook) < 1 { return }   // quiet: once a second
+        lastLook = now
+        let snap = WindowServer.snapshot(pid: pid)
+
         if let p = panel {
-            var keep = p.pid == pid && (navigating || AX.isAlive(p.element))
-            // Finder: follow its focus to another window (or to a dialog it shows).
-            // (Not while you type in the bar: Finder then reports another window as focused.)
-            if keep, p.isFinder, !navigating, !bar.panel.isKeyWindow,
-               let fw = AX.element(p.app, kAXFocusedWindowAttribute), !CFEqual(fw, p.element) {
+            var keep: Bool
+            if p.pid != pid {
                 keep = false
+            } else if navigating {
+                keep = true
+            } else if let id = p.windowID {
+                // Still on screen, and (Finder) still the front window? Typing in the bar doesn't count as leaving.
+                keep = snap.ids.contains(id) && (!p.isFinder || snap.front == id || bar.panel.isKeyWindow)
+            } else {
+                keep = AX.isAlive(p.element)      // rare: window couldn't be matched, so ask the app
             }
             if keep {
-                // Back in the dialog's app (or Finder bar open): make sure the bar follows again.
+                lastSnapshot = snap
                 if (!p.isFinder || p.revealed) && !clock.running { clock.start() }
-                // Occasional full re-read as a safety net (Finder: only while its bar is open).
-                if !scanning && !navigating && (!p.isFinder || p.revealed) && Date().timeIntervalSince(lastScan) > 2 {
-                    scanLocation()
-                }
+                // Dialogs: a rare safety re-read (changes arrive as notifications, plus the pop-up check).
+                if !p.isFinder && !scanning && !navigating && Date().timeIntervalSince(lastScan) > 15 { scanLocation() }
                 return
             }
             dropPanel()
+            lastSnapshot = nil
         }
-        guard !finding else { return }
+
+        if snap != lastSnapshot {
+            lastSnapshot = snap
+            findRetries = 3          // a dialog may still be animating in: allow a couple more tries
+        }
+        guard findRetries > 0, !finding, Date().timeIntervalSince(lastFind) > 0.25 else { return }
+        findRetries -= 1
+        lastFind = Date()
         finding = true
         let appName = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "?"
         let wantFinder = finderEnabled && NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.apple.finder"
@@ -167,6 +183,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 self.finding = false
                 guard let found, self.panel == nil, self.frontPid() == found.pid else { return }
+                self.findRetries = 0
                 self.adopt(found, appName: appName)
             }
         }
@@ -195,7 +212,8 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
             frameTick()
             clock.start()   // the dialog bar is always shown: follow the dialog every frame
         }
-        scanLocation()
+        // Dialogs: read the folder now (the bar is visible). Finder: only when you click the title.
+        if p.isFinder { p.stale = true } else { scanLocation() }
         if defaults.bool(forKey: "autodump") { writeDump(p, reason: "autodump") }
     }
 
@@ -217,6 +235,8 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
             dropPanel()
             scheduleCheck()
         case kAXTitleChangedNotification, kAXValueChangedNotification:
+            // Finder with the bar hidden: just note it; the path is read when you click the title.
+            if p.isFinder && !p.revealed { p.stale = true; return }
             if !navigating { scanLocation() }
         default:
             break
@@ -293,6 +313,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
     private func reveal() {
         guard let p = panel, p.isFinder, !p.revealed else { return }
         p.revealed = true
+        if p.stale { p.stale = false; p.path = nil; p.popupValue = AX.string(p.element, kAXTitleAttribute) }
         bar.setPath(p.path, name: p.popupValue, force: true)
         frameTick()
         clock.start()
@@ -308,6 +329,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
     }
 
     private func globalMouse(_ e: NSEvent) {
+        busyUntil = Date().addingTimeInterval(1.5)     // a click may open a dialog: look closely for a moment
         guard let p = panel, let top = NSScreen.screens.first?.frame.maxY else { return }
         let m = NSEvent.mouseLocation
         let point = CGPoint(x: m.x, y: top - m.y)      // Accessibility coordinates
@@ -374,12 +396,13 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         if p.isFinder {
             let rec = recents
             scanQueue.async {
+                let before = AX.calls
                 let r = Location.finderFolder(p.element, previous: previous, recents: rec)
                 DispatchQueue.main.async {
                     self.scanning = false
                     self.lastScan = Date()
                     guard self.panel === p else { return }
-                    if r.path != p.path { log("Finder folder: \(r.path ?? "unknown") (title \"\(r.title ?? "-")\", \(r.urls) item URLs)") }
+                    if r.path != p.path { log("Finder folder: \(r.path ?? "unknown") (title \"\(r.title ?? "-")\", \(r.urls) item URLs, \(AX.calls - before) requests)") }
                     p.popupValue = r.title
                     p.path = r.path
                     self.bar.setPath(r.path, name: r.title)
@@ -402,6 +425,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         }
         rec += recents
         scanQueue.async {
+            let before = AX.calls
             let s = Location.scan(p.element)
             let pop = Location.folderPopup(s)
             let path = Location.resolve(name: pop?.value, urls: s.urls, document: s.document, previous: previous, recents: rec)
@@ -416,7 +440,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
                 p.popup = pop?.element
                 p.popupValue = pop?.value
                 if path != p.path || p.path == nil && !p.dumped {
-                    log("folder: \(path ?? "unknown") (pop-up \"\(pop?.value ?? "-")\", \(s.urls.count) item URLs, \(s.popups.count) pop-ups)")
+                    log("folder: \(path ?? "unknown") (pop-up \"\(pop?.value ?? "-")\", \(s.urls.count) item URLs, \(s.popups.count) pop-ups, \(AX.calls - before) requests)")
                 }
                 p.path = path
                 self.bar.setPath(path, name: pop?.value)
@@ -711,6 +735,29 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
                 }
                 try? text.write(to: dumpURL, atomically: true, encoding: .utf8)
                 DispatchQueue.main.async { log("wrote app dump for \(bid)") }
+            }
+        }
+        else if cmd == "axcount" { log("Accessibility requests sent so far: \(AX.calls)") }
+        else if cmd == "probefinder", let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
+            // Cost of reading the folder of Finder's frontmost window (needs no focus change).
+            scanQueue.async {
+                let app = AXUIElementCreateApplication(finder.processIdentifier)
+                guard let w = AX.elements(app, kAXWindowsAttribute).first(where: { AX.string($0, "AXIdentifier") == "FinderWindow" }) else {
+                    DispatchQueue.main.async { log("probefinder: no Finder window on this Space") }; return
+                }
+                let before = AX.calls
+                let r = Location.finderFolder(w, previous: nil, recents: [])
+                let n = AX.calls - before
+                DispatchQueue.main.async { log("probefinder: \(r.path ?? "unknown") in \(n) requests") }
+            }
+        }
+        else if cmd == "probefind", let pid = frontPid() {
+            // How many requests one dialog search costs in the front app (the old code did this every 0.5 s).
+            scanQueue.async {
+                let before = AX.calls
+                _ = PanelFinder.find(pid: pid)
+                let n = AX.calls - before
+                DispatchQueue.main.async { log("one dialog search in pid \(pid) = \(n) requests") }
             }
         }
         else if cmd == "state" {

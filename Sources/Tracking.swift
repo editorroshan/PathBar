@@ -29,6 +29,32 @@ enum WindowServer {
         return bounds(w)
     }
 
+    /// A cheap summary of the app's windows that could be a file dialog or a Finder window:
+    /// their ids, and which one is in front. Comparing it between looks shows when something
+    /// new appeared, without sending a single message to the app.
+    struct Snapshot: Equatable {
+        var ids: Set<CGWindowID> = []
+        var front: CGWindowID?
+    }
+
+    static func snapshot(pid: pid_t) -> Snapshot {
+        var snap = Snapshot()
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return snap }
+        for w in list {   // front to back
+            let owner = w[kCGWindowOwnerPID as String] as? pid_t
+            // Sandboxed apps (Safari, …) show their file dialogs from Apple's panel service process.
+            let service = (w[kCGWindowOwnerName as String] as? String)?.contains("Panel Service") ?? false
+            guard owner == pid || service,
+                  let layer = w[kCGWindowLayer as String] as? Int, layer == 0 || layer == 3 || layer == 8,
+                  let id = w[kCGWindowNumber as String] as? CGWindowID,
+                  let r = bounds(w), r.width >= 300, r.height >= 150 else { continue }
+            snap.ids.insert(id)
+            if snap.front == nil, owner == pid { snap.front = id }
+        }
+        return snap
+    }
+
     private static func bounds(_ w: [String: Any]) -> CGRect? {
         guard let b = w[kCGWindowBounds as String] as? NSDictionary else { return nil }
         return CGRect(dictionaryRepresentation: b as CFDictionary)

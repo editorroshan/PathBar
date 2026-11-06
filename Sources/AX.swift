@@ -4,7 +4,14 @@ import ApplicationServices
 // Small helpers around the Accessibility API, used to read other apps' windows.
 
 enum AX {
+    /// How many requests PathBar has sent to other apps (each one is handled on that app's main thread).
+    private static let lock = NSLock()
+    private static var _calls = 0
+    static var calls: Int { lock.lock(); defer { lock.unlock() }; return _calls }
+    static func counted() { lock.lock(); _calls += 1; lock.unlock() }
+
     static func attr(_ e: AXUIElement, _ name: String) -> CFTypeRef? {
+        counted()
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success else { return nil }
         return v
@@ -23,6 +30,7 @@ enum AX {
     }
 
     static func count(_ e: AXUIElement, _ name: String) -> Int {
+        counted()
         var n: CFIndex = 0
         guard AXUIElementGetAttributeValueCount(e, name as CFString, &n) == .success else { return -1 }
         return n
@@ -34,6 +42,7 @@ enum AX {
         if n == 0 { return [] }
         if n < 0 || n <= limit { return elements(e, kAXChildrenAttribute) }
         var out: CFArray?
+        counted()
         guard AXUIElementCopyAttributeValues(e, kAXChildrenAttribute as CFString, 0, limit, &out) == .success,
               let arr = out as? [AXUIElement] else { return [] }
         return arr
@@ -41,6 +50,7 @@ enum AX {
 
     /// Several attributes in one round trip. Missing ones are left out.
     static func multi(_ e: AXUIElement, _ names: [String]) -> [String: CFTypeRef] {
+        counted()
         var out: CFArray?
         guard AXUIElementCopyMultipleAttributeValues(e, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &out) == .success,
               let arr = out as? [CFTypeRef] else { return [:] }
@@ -76,13 +86,15 @@ enum AX {
     /// False only when the element is really gone. A slow or busy app (e.g. while its
     /// Go to Folder sheet is open) answers with a timeout, which still counts as alive.
     static func isAlive(_ e: AXUIElement) -> Bool {
+        counted()
         var v: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &v)
         return err != .invalidUIElement
     }
 
     static func set(_ e: AXUIElement, _ name: String, _ value: CFTypeRef) -> Bool {
-        AXUIElementSetAttributeValue(e, name as CFString, value) == .success
+        counted()
+        return AXUIElementSetAttributeValue(e, name as CFString, value) == .success
     }
 
     static func describe(_ v: CFTypeRef?) -> String {
@@ -127,6 +139,8 @@ final class FilePanel {
     var windowID: CGWindowID?
     var frame: CGRect?            // last known frame, Accessibility (top-left) coordinates
     var popupWatched = false
+    /// Finder: the folder changed while the bar was hidden; read it again when shown.
+    var stale = false
 
     var isFinder: Bool { kind == "finder" }
 
@@ -279,58 +293,84 @@ enum Location {
     /// Folder shown in a Finder window: its document URL, else worked out from its rows.
     static func finderFolder(_ window: AXUIElement, previous: String?, recents: [String]) -> (path: String?, title: String?, urls: Int) {
         let title = AX.string(window, kAXTitleAttribute)
-        if let doc = AX.url(AX.attr(window, "AXDocument")), doc.isFileURL {
+        // The folder icon next to the title knows the folder: one request instead of a walk.
+        var direct = [AX.url(AX.attr(window, "AXDocument"))]
+        if let proxy = AX.element(window, "AXProxy") { direct.append(AX.url(AX.attr(proxy, "AXURL"))) }
+        for case let u? in direct where u.isFileURL {
             var isDir: ObjCBool = false
-            let p = doc.standardizedFileURL.path
+            let p = u.standardizedFileURL.path
             if FileManager.default.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue { return (p, title, 0) }
         }
-        let s = scan(window)
+        let s = scan(window, name: title)
         return (resolve(name: title, urls: s.urls, document: s.document, previous: previous, recents: recents), title, s.urls.count)
     }
 
     static let nodeAttrs = [kAXRoleAttribute, kAXSubroleAttribute, "AXIdentifier", "AXURL", "AXDocument", kAXDescriptionAttribute]
 
-    static func scan(_ panel: AXUIElement) -> LocationScan {
+    /// Walks the window for the folder pop-up(s) and a few file rows. Stops as soon as a row's
+    /// folder matches the name shown (`name`, or a pop-up's value), so it only asks what it needs.
+    static func scan(_ panel: AXUIElement, name: String? = nil) -> LocationScan {
         var s = LocationScan()
         if let doc = AX.url(AX.attr(panel, "AXDocument")) { s.document = doc }
-        var budget = 900
-        walk(panel, depth: 0, budget: &budget, into: &s)
+        var budget = 600
+        var done = false
+        walk(panel, depth: 0, budget: &budget, done: &done, name: name, into: &s)
         return s
     }
 
-    private static func walk(_ e: AXUIElement, depth: Int, budget: inout Int, into s: inout LocationScan) {
-        guard depth < 28, budget > 0 else { return }
+    /// True when this file URL lives in (or is) the folder called `name`.
+    private static func belongs(_ u: URL, to name: String) -> Bool {
+        let p = u.standardizedFileURL.path
+        let parent = (p as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        return fm.displayName(atPath: parent) == name || (parent as NSString).lastPathComponent == name
+    }
+
+    /// Returns the node's subrole (so the parent can spot the search field without asking again).
+    @discardableResult
+    private static func walk(_ e: AXUIElement, depth: Int, budget: inout Int, done: inout Bool,
+                             name: String?, into s: inout LocationScan) -> String {
+        guard !done, depth < 28, budget > 0 else { return "" }
         budget -= 1
         let d = AX.multi(e, nodeAttrs)
         let role = d[kAXRoleAttribute] as? String ?? ""
+        let subrole = d[kAXSubroleAttribute] as? String ?? ""
         let ident = (d["AXIdentifier"] as? String ?? "").lowercased()
         let desc = (d[kAXDescriptionAttribute] as? String ?? "").lowercased()
         // The sidebar lists favourites from all over the disk; they say nothing about the current folder.
-        if ident.contains("sidebar") || desc == "sidebar" { return }
-        if let u = AX.url(d["AXURL"]), u.isFileURL { s.urls.append(u) }
+        if ident.contains("sidebar") || desc == "sidebar" { return subrole }
+        if let u = AX.url(d["AXURL"]), u.isFileURL {
+            s.urls.append(u)
+            let names = name.map { [$0] } ?? s.popups.map { $0.value }
+            if names.contains(where: { belongs(u, to: $0) }) { done = true; return subrole }
+        }
         if let u = AX.url(d["AXDocument"]), u.isFileURL, s.document == nil { s.document = u }
         if role == "AXPopUpButton" {
             if let v = AX.string(e, kAXValueAttribute), !v.isEmpty {
                 s.popups.append((e, v, AX.frame(e), false))
             }
-            return
+            return subrole
         }
         // Long lists: the first rows and the selected ones are enough to know the folder.
         let n = AX.count(e, kAXChildrenAttribute)
+        if n == 0 { return subrole }
         var kids: [AXUIElement]
         if n > 40 {
             kids = AX.children(e, limit: 6)
             kids += AX.elements(e, kAXSelectedRowsAttribute).prefix(4)
-            kids += AX.elements(e, kAXSelectedChildrenAttribute).prefix(4)
         } else {
             kids = AX.children(e, limit: 40)
         }
-        let isToolbarLike = kids.contains { AX.string($0, kAXSubroleAttribute) == "AXSearchField" }
         let before = s.popups.count
-        for c in kids { walk(c, depth: depth + 1, budget: &budget, into: &s) }
-        if isToolbarLike {
+        var hasSearch = false
+        for c in kids {
+            if walk(c, depth: depth + 1, budget: &budget, done: &done, name: name, into: &s) == "AXSearchField" { hasSearch = true }
+            if done { break }
+        }
+        if hasSearch {
             for i in before..<s.popups.count { s.popups[i].nearSearch = true }
         }
+        return subrole
     }
 
     /// The pop-up that names the current folder: the one beside the search field, else the topmost.

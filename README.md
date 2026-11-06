@@ -136,14 +136,16 @@ with it, so macOS sees the same app and keeps the permission.
 
 ## How it works
 
-PathBar is a small menu-bar app in Swift/AppKit with no dependencies. It listens to the
-front app's Accessibility notifications (new window, focus change) and looks for windows
-whose identifier is `save-panel` or `open-panel`, or for Finder's front browser window.
-While the bar is on screen it follows the window using the window server's own position:
-every screen refresh while you drag, 10 times a second when still. This uses no CPU
-when no dialog is open, and the bar disappears the moment the window closes. It reads the folder from the file list
-(each row carries its file URL) and the folder pop-up or window title. To jump, it opens the
-window's own **Go to Folder** sheet and enters the path, the same thing you'd do by hand.
+PathBar is a small menu-bar app in Swift/AppKit with no dependencies. It is careful not to
+slow down the apps you work in. It never polls them. It watches the window server's list of
+windows (once a second, 4× a second for a moment after a click). Only when the front app
+gets a new window does it ask that app, once, through the Accessibility API, whether it is a
+Save/Open dialog (identifier `save-panel` / `open-panel`) or Finder's front window. It reads the
+folder from the file list (each row carries its file URL) and the folder pop-up or window
+title. In Finder that only happens when you click the title. While the bar is on screen it follows the
+window using the window server's own position: every screen refresh while you drag, 10× a
+second when still. To jump, it opens the window's own **Go to Folder** sheet and enters the
+path, the same thing you'd do by hand.
 
 ```
 Sources/
