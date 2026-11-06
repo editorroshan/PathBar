@@ -48,7 +48,7 @@ save a download.
 
 ### Easiest: the app (no Terminal)
 
-Download **PathBar-1.1.0.dmg** (from the Releases page, or from whoever shared it with you),
+Download **PathBar-1.1.1.dmg** (from the Releases page, or from whoever shared it with you),
 open it, drag **PathBar** onto **Applications**, then open it from Applications.
 
 - macOS first says *"Apple could not verify PathBar…"*, because it's a free app that isn't

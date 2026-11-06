@@ -11,7 +11,7 @@ set -euo pipefail
 
 LABEL="local.pathbar"                # login item (LaunchAgent) name
 BUNDLE_ID="local.pathbar.helper"     # changing this makes macOS treat PathBar as a new app
-VERSION="1.1.0"
+VERSION="1.1.1"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APP="$HOME/Applications/PathBar.app"
 BIN="$APP/Contents/MacOS/PathBar"

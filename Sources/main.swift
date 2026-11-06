@@ -55,6 +55,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
     /// Runs once per screen refresh, only while the bar is on screen.
     private lazy var clock = FrameClock { [weak self] in self?.frameTick() }
     private var mouseDown: (point: CGPoint, time: Date)?
+    private var clickRescan: DispatchWorkItem?
     /// After a click on a dialog's Save/Cancel the dialog is closing: keep the bar hidden meanwhile.
     private var hiddenUntil = Date.distantPast
 
@@ -349,6 +350,18 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
             }
             return
         }
+        // Dialogs: a click may have opened another folder; look again once it has settled
+        // (some macOS versions don't announce the change).
+        if e.type == .leftMouseUp, !p.isFinder, frontPid() == p.pid {
+            clickRescan?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.panel === p, !self.navigating else { return }
+                self.scanLocation()
+            }
+            clickRescan = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+            return
+        }
         // Mouse up: a plain click (not a drag) on the Finder window's title shows the bar.
         guard e.type == .leftMouseUp, p.isFinder, !p.revealed, frontPid() == p.pid,
               let down = mouseDown, hypot(down.point.x - point.x, down.point.y - point.y) < 5,
@@ -434,7 +447,14 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
             let before = AX.calls
             let s = Location.scan(p.element)
             let pop = Location.folderPopup(s)
-            let path = Location.resolve(name: pop?.value, urls: s.urls, document: s.document, previous: previous, recents: rec)
+            var path = Location.resolve(name: pop?.value, urls: s.urls, document: s.document, previous: previous, recents: rec)
+            var how = s.urls.isEmpty ? "no item URLs" : "\(s.urls.count) item URLs"
+            if path == nil, let name = pop?.value {
+                let t = Date()
+                path = Location.spotlightFolder(named: name, previous: previous)
+                how += path != nil ? ", found with Spotlight" : ", not found with Spotlight"
+                how += String(format: " in %.1f s", Date().timeIntervalSince(t))
+            }
             DispatchQueue.main.async {
                 self.scanning = false
                 self.lastScan = Date()
@@ -446,7 +466,7 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
                 p.popup = pop?.element
                 p.popupValue = pop?.value
                 if path != p.path || p.path == nil && !p.dumped {
-                    log("folder: \(path ?? "unknown") (pop-up \"\(pop?.value ?? "-")\", \(s.urls.count) item URLs, \(s.popups.count) pop-ups, \(AX.calls - before) requests)")
+                    log("folder: \(path ?? "unknown") (pop-up \"\(pop?.value ?? "-")\", \(how), \(s.popups.count) pop-ups, \(AX.calls - before) requests)")
                 }
                 p.path = path
                 self.bar.setPath(path, name: pop?.value)
@@ -847,6 +867,8 @@ func selfTest() -> Bool {
     check(Location.resolve(name: (t as NSString).lastPathComponent, urls: col1, document: nil, previous: nil, recents: []) == t, "list view")
     check(Location.resolve(name: "Inner", urls: [], document: nil, previous: t + "/Alpha One", recents: []) == t + "/Alpha One/Inner", "empty child")
     check(Location.resolve(name: "Alpha One", urls: [], document: nil, previous: t + "/Alpha One/Inner", recents: []) == t + "/Alpha One", "went up")
+    try? fm.createDirectory(atPath: t + "/Same/Same", withIntermediateDirectories: true)
+    check(Location.resolve(name: "Same", urls: [], document: nil, previous: t + "/Same", recents: []) == t + "/Same", "stayed, not same-name child")
     check(Location.resolve(name: nil, urls: col2, document: nil, previous: nil, recents: []) == t + "/Beta", "no name")
     try? fm.createDirectory(atPath: t + "/Same/Same", withIntermediateDirectories: true)
     let nested = [URL(fileURLWithPath: t + "/Same/Same"), URL(fileURLWithPath: t + "/Alpha One")]

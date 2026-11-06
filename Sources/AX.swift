@@ -290,6 +290,65 @@ struct LocationScan {
 }
 
 enum Location {
+    /// Test switch (defaults key `debugNoRowURLs`): pretend the file list reports no locations,
+    /// as on some macOS versions, to exercise the Spotlight fallback.
+    static var ignoreRowURLs = UserDefaults.standard.bool(forKey: "debugNoRowURLs")
+
+    /// Backup when the dialog's file list doesn't report file locations: ask Spotlight for folders
+    /// with the name the dialog shows, and pick the likeliest. Never touches the dialog's app.
+    static func spotlightFolder(named name: String, previous: String?) -> String? {
+        let quoted = name.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let query = "(kMDItemFSName == \"\(quoted)\" || kMDItemDisplayName == \"\(quoted)\") && kMDItemContentType == \"public.folder\""
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        task.arguments = [query]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        guard (try? task.run()) != nil else { return nil }
+        let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 4, execute: killer)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        killer.cancel()
+        let home = NSHomeDirectory()
+        let fm = FileManager.default
+        let found = (String(data: data, encoding: .utf8) ?? "").split(separator: "\n").map(String.init).filter { p in
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue else { return false }
+            // Skip app internals, system and hidden places, caches and mirrored copies of other paths
+            // (e.g. a video app's cache rebuilding /Users/… or /Volumes/… inside itself): a wrong
+            // guess is worse than none. (Spotlight only shows PathBar places it's allowed to see.)
+            let lower = p.lowercased()
+            let mirrored = p.components(separatedBy: "/Users/").count > 2 || (p.contains("/Volumes/") && !p.hasPrefix("/Volumes/"))
+            return !p.contains(".app/") && !p.hasPrefix(home + "/Library/") && !p.hasPrefix("/System/")
+                && !p.hasPrefix("/Library/") && !p.contains("/.") && !lower.contains("cache") && !mirrored
+        }
+        guard !found.isEmpty else { return nil }
+        if found.count == 1 { return found[0] }
+        // Several with that name: one next to where the dialog just was wins, then the most recently changed.
+        if let prev = previous {
+            if let child = found.first(where: { ($0 as NSString).deletingLastPathComponent == prev }) { return child }
+            if let ancestor = found.first(where: { prev.hasPrefix($0 + "/") }) { return ancestor }
+            if let sibling = found.first(where: { ($0 as NSString).deletingLastPathComponent == (prev as NSString).deletingLastPathComponent }) { return sibling }
+        }
+        // Otherwise the most "normal" one: no cache folders or mirrored copies of other paths,
+        // shallow, in your home or on a drive; then the most recently changed.
+        func penalty(_ p: String) -> Int {
+            let parts = p.split(separator: "/").map { $0.lowercased() }
+            var score = parts.count
+            if parts.contains(where: { $0.contains("cache") }) { score += 20 }
+            if p.components(separatedBy: "/Users/").count > 2 { score += 20 }   // e.g. a cache mirroring /Users/…
+            if !p.hasPrefix(home + "/") && !p.hasPrefix("/Volumes/") { score += 5 }
+            return score
+        }
+        func modified(_ p: String) -> Date { (try? fm.attributesOfItem(atPath: p)[.modificationDate] as? Date) ?? .distantPast }
+        return found.min { a, b in
+            let pa = penalty(a), pb = penalty(b)
+            return pa != pb ? pa < pb : modified(a) > modified(b)
+        }
+    }
+
     /// Folder shown in a Finder window: its document URL, else worked out from its rows.
     static func finderFolder(_ window: AXUIElement, previous: String?, recents: [String]) -> (path: String?, title: String?, urls: Int) {
         let title = AX.string(window, kAXTitleAttribute)
@@ -339,7 +398,7 @@ enum Location {
         let desc = (d[kAXDescriptionAttribute] as? String ?? "").lowercased()
         // The sidebar lists favourites from all over the disk; they say nothing about the current folder.
         if ident.contains("sidebar") || desc == "sidebar" { return subrole }
-        if let u = AX.url(d["AXURL"]), u.isFileURL {
+        if !ignoreRowURLs, let u = AX.url(d["AXURL"]), u.isFileURL {
             s.urls.append(u)
             let names = name.map { [$0] } ?? s.popups.map { $0.value }
             if names.contains(where: { belongs(u, to: $0) }) { done = true; return subrole }
@@ -414,6 +473,7 @@ enum Location {
         guard let name else { return nil }
         // Empty folder or small dialog: guess from where we just were.
         if let prev = previous {
+            if matches(prev) { return prev }      // same name as before: still there (not a same-name sub-folder)
             let child = (prev as NSString).appendingPathComponent(name)
             if isDir(child) { return child }
             var p = prev
