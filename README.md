@@ -35,10 +35,25 @@ save a download.
 
 ## Install
 
+### Easiest: the app (no Terminal)
+
+Download **PathBar-1.1.0.dmg** (from the Releases page, or from whoever shared it with you),
+open it, drag **PathBar** onto **Applications**, then open it from Applications.
+
+- macOS first says *"Apple could not verify PathBar…"*, because it's a free app that isn't
+  notarized by Apple. Click **Done**, go to **System Settings → Privacy & Security**, scroll
+  down to "PathBar was blocked…", and click **Open Anyway**. You only do this once.
+- When asked, switch PathBar on in **Accessibility**. It adds itself to your login items.
+
+Works on Apple Silicon and Intel Macs, macOS 13+. "Read Me First" in the DMG has the same
+steps.
+
+### From source
+
 **With git:**
 
 ```bash
-git clone https://github.com/<user>/PathBar.git
+git clone https://github.com/editorroshan/PathBar.git
 cd PathBar
 bash install.sh
 ```
@@ -154,7 +169,8 @@ Sources/
   AX.swift         Accessibility helpers; finding dialogs and Finder windows; reading the folder
   Navigator.swift  jumping (Go to Folder), path parsing, Tab completion
   Bar.swift        the floating bar UI
-install.sh         build + install (+ login item)
+install.sh         build + install from source (+ login item)
+make-dmg.sh        build the drag-and-drop installer (DMG)
 setup-signing.sh   one-time personal signing certificate
 uninstall.sh       remove
 ```
@@ -162,6 +178,8 @@ uninstall.sh       remove
 ### Developing
 
 - `bash install.sh --no-login` builds and opens PathBar without the login item.
+- `bash make-dmg.sh` builds the ready-to-run installer `dist/PathBar-<version>.dmg`, a
+  universal app for Apple Silicon and Intel, signed with your PathBar certificate.
 - Every build runs `PathBar --selftest` (path parsing, Tab completion, folder detection).
 - Debug mode: `defaults write local.pathbar.helper debug -bool true`, then restart PathBar.
   It then accepts the distributed notification `local.pathbar.cmd` with `state`, `dump`,

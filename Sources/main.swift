@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import ServiceManagement
 
 // PathBar: a Windows-style address bar for macOS Save and Open dialogs (browser downloads,
 // "Save As…", "Open…", uploads). It floats on top of the dialog, shows the full path of the
@@ -76,10 +77,15 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         set { defaults.set(Array(newValue.prefix(15)), forKey: "recents") }
     }
 
+    /// Installed by install.sh: its LaunchAgent starts PathBar at login, so the app doesn't register itself.
+    private var startedByInstallScript: Bool { ProcessInfo.processInfo.environment["PATHBAR_LAUNCHD"] != nil }
+
     func start() {
+        guard runningFromApplications() else { return }
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.5)
         bar.delegate = self
         setupStatusItem()
+        registerLoginItemOnce()
         trusted = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
         updateStatusIcon()      // the icon was drawn before the permission was known
         log("started (pid \(getpid())), accessibility \(trusted ? "granted" : "NOT granted yet")")
@@ -653,6 +659,12 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         finderToggle.target = self
         finderToggle.state = finderEnabled ? .on : .off
         menu.addItem(finderToggle)
+        if !startedByInstallScript {
+            let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
+            login.target = self
+            login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            menu.addItem(login)
+        }
         let dump = NSMenuItem(title: "Write Diagnostic Dump", action: #selector(dumpFront), keyEquivalent: "")
         dump.target = self
         menu.addItem(dump)
@@ -663,6 +675,42 @@ final class Controller: NSObject, BarDelegate, NSMenuDelegate {
         let quit = NSMenuItem(title: "Quit PathBar", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
+    }
+
+    // MARK: Installed from the DMG
+
+    /// Opened straight from the disk image (or a quarantined Downloads copy macOS runs from a
+    /// temporary place): ask to move it to Applications first, so the login item and the
+    /// Accessibility permission point at the right copy.
+    private func runningFromApplications() -> Bool {
+        let path = Bundle.main.bundlePath
+        guard path.hasPrefix("/Volumes/") || path.contains("/AppTranslocation/") else { return true }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Move PathBar to Applications first"
+        alert.informativeText = "Drag PathBar into the Applications folder (in the window it came in), then open it from Applications."
+        alert.addButton(withTitle: "Quit")
+        alert.runModal()
+        NSApp.terminate(nil)
+        return false
+    }
+
+    /// First start of a DMG install: start at login from now on (shown in System Settings > Login Items).
+    private func registerLoginItemOnce() {
+        guard !startedByInstallScript, !defaults.bool(forKey: "loginItemSet") else { return }
+        defaults.set(true, forKey: "loginItemSet")
+        do { try SMAppService.mainApp.register(); log("added to login items") }
+        catch { log("couldn't add login item: \(error.localizedDescription)") }
+    }
+
+    @objc private func toggleLoginItem() {
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled { try service.unregister() } else { try service.register() }
+        } catch {
+            log("login item change failed: \(error.localizedDescription)")
+            if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+        }
     }
 
     @objc private func toggleEnabled() { enabled.toggle(); if !enabled { dropPanel() }; updateStatusIcon() }
