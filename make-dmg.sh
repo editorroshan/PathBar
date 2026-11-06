@@ -29,43 +29,7 @@ done
 lipo -create "$TMP/PathBar-arm64" "$TMP/PathBar-x86_64" -output "$APP/Contents/MacOS/PathBar"
 "$APP/Contents/MacOS/PathBar" --selftest >/dev/null
 
-echo "Drawing the icon…"
-cat > "$TMP/icon.swift" <<'EOF'
-import AppKit
-// The bar itself as an icon: a blue ↑ square and a path, on a dark rounded tile.
-let size: CGFloat = 1024
-let img = NSImage(size: NSSize(width: size, height: size))
-img.lockFocus()
-let tile = NSBezierPath(roundedRect: NSRect(x: 100, y: 100, width: 824, height: 824), xRadius: 185, yRadius: 185)
-NSGradient(starting: NSColor(white: 0.20, alpha: 1), ending: NSColor(white: 0.09, alpha: 1))!.draw(in: tile, angle: -90)
-NSColor(white: 1, alpha: 0.10).setStroke(); tile.lineWidth = 4; tile.stroke()
-let bar = NSBezierPath(roundedRect: NSRect(x: 170, y: 420, width: 684, height: 184), xRadius: 46, yRadius: 46)
-NSColor(white: 0.04, alpha: 1).setFill(); bar.fill()
-NSColor(white: 1, alpha: 0.14).setStroke(); bar.lineWidth = 4; bar.stroke()
-let up = NSBezierPath(roundedRect: NSRect(x: 196, y: 446, width: 132, height: 132), xRadius: 30, yRadius: 30)
-NSColor(red: 0.04, green: 0.52, blue: 1, alpha: 1).setFill(); up.fill()
-let cfg = NSImage.SymbolConfiguration(pointSize: 78, weight: .bold)
-if let arrow = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
-    let tinted = NSImage(size: arrow.size, flipped: false) { r in
-        arrow.draw(in: r); NSColor.white.set(); r.fill(using: .sourceAtop); return true }
-    tinted.draw(in: NSRect(x: 262 - arrow.size.width / 2, y: 512 - arrow.size.height / 2, width: arrow.size.width, height: arrow.size.height))
-}
-let text = NSAttributedString(string: "~/Projects", attributes: [
-    .font: NSFont.systemFont(ofSize: 92, weight: .medium), .foregroundColor: NSColor(white: 0.92, alpha: 1)])
-text.draw(at: NSPoint(x: 360, y: 455))
-img.unlockFocus()
-let rep = NSBitmapImageRep(data: img.tiffRepresentation!)!
-try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
-EOF
-xcrun swiftc -O "$TMP/icon.swift" -o "$TMP/make-icon" 2>/dev/null
-"$TMP/make-icon" "$TMP/icon-1024.png"
-ICONSET="$TMP/PathBar.iconset"
-mkdir -p "$ICONSET"
-for s in 16 32 128 256 512; do
-  sips -z $s $s "$TMP/icon-1024.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s * 2)) $((s * 2)) "$TMP/icon-1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/PathBar.icns"
+cp "$HERE/Resources/PathBar.icns" "$APP/Contents/Resources/PathBar.icns"   # drawn by Resources/make-icon.swift
 
 cat > "$APP/Contents/Info.plist" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>

@@ -1,17 +1,28 @@
-# PathBar
+<p align="center">
+  <img src="docs/icon.png" width="160" alt="PathBar icon">
+</p>
 
-**A Windows-style address bar for macOS Save/Open dialogs and Finder windows.**
+<h1 align="center">PathBar</h1>
+
+<p align="center"><b>A Windows-style address bar for macOS Save/Open dialogs and Finder windows.</b></p>
+
+<p align="center">
+  <a href="https://github.com/editorroshan/PathBar/releases/latest"><b>Download PathBar for Mac</b></a>
+  · Apple Silicon &amp; Intel · macOS 13+ · Free &amp; open source
+</p>
 
 macOS file dialogs only show the current folder's name. PathBar adds a bar that shows the
 **full path** of where you are. Click it, type or paste any path, press Return, and the
 dialog (or Finder window) jumps straight there. It's handy when your browser asks where to
 save a download.
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  ↑   /Users/you/Documents/Projects/Client/Exports          ⧉   ⟲   │
-└──────────────────────────────────────────────────────────────────────┘
-```
+### In a Save dialog (browser download)
+
+![PathBar above a browser's Save dialog](docs/save-dialog.png)
+
+### In Finder (click the folder name to show it)
+
+![PathBar in a Finder window](docs/finder.png)
 
 ## Features
 
@@ -173,6 +184,8 @@ install.sh         build + install from source (+ login item)
 make-dmg.sh        build the drag-and-drop installer (DMG)
 setup-signing.sh   one-time personal signing certificate
 uninstall.sh       remove
+Resources/         app icon (PathBar.icns) and the script that draws it
+docs/              icon and screenshots for this page
 ```
 
 ### Developing

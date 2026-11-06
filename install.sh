@@ -37,7 +37,7 @@ if ! xcrun --find swiftc >/dev/null 2>&1; then
 fi
 
 SOURCES=("$HERE"/Sources/*.swift)
-SRC_HASH="$(cat "${SOURCES[@]}" "$HERE/install.sh" | shasum -a 256 | cut -c1-40)"
+SRC_HASH="$(cat "${SOURCES[@]}" "$HERE/install.sh" "$HERE/Resources/PathBar.icns" | shasum -a 256 | cut -c1-40)"
 STAMP="$APP/Contents/Resources/source-hash"
 
 # --- Signing certificate (once) -------------------------------------------------------------
@@ -73,6 +73,7 @@ else
   xcrun swiftc -O -swift-version 5 "${SOURCES[@]}" -o "$BIN"
   "$BIN" --selftest >/dev/null || { echo "Self-test failed; not installing."; exit 1; }
   echo "$SRC_HASH" > "$STAMP"
+  cp "$HERE/Resources/PathBar.icns" "$APP/Contents/Resources/PathBar.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -83,6 +84,7 @@ cat > "$APP/Contents/Info.plist" <<PLISTEOF
     <key>CFBundleName</key><string>PathBar</string>
     <key>CFBundleDisplayName</key><string>PathBar</string>
     <key>CFBundleExecutable</key><string>PathBar</string>
+    <key>CFBundleIconFile</key><string>PathBar</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
