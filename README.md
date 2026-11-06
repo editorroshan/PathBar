@@ -184,7 +184,7 @@ install.sh         build + install from source (+ login item)
 make-dmg.sh        build the drag-and-drop installer (DMG)
 setup-signing.sh   one-time personal signing certificate
 uninstall.sh       remove
-Resources/         app icon (PathBar.icns) and the script that draws it
+Resources/         app icon (PathBar.icns), its artwork and the script that builds it
 docs/              icon and screenshots for this page
 ```
 

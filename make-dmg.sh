@@ -29,7 +29,7 @@ done
 lipo -create "$TMP/PathBar-arm64" "$TMP/PathBar-x86_64" -output "$APP/Contents/MacOS/PathBar"
 "$APP/Contents/MacOS/PathBar" --selftest >/dev/null
 
-cp "$HERE/Resources/PathBar.icns" "$APP/Contents/Resources/PathBar.icns"   # drawn by Resources/make-icon.swift
+cp "$HERE/Resources/PathBar.icns" "$APP/Contents/Resources/PathBar.icns"   # made from Resources/icon-source.png by Resources/make-icon.swift
 
 cat > "$APP/Contents/Info.plist" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
