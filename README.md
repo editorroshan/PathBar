@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/icon.png" width="160" alt="PathBar icon">
+  <img src="docs/pathbar-icon.png" width="160" alt="PathBar icon">
 </p>
 
 <h1 align="center">PathBar</h1>
